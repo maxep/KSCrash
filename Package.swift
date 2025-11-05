@@ -1,5 +1,6 @@
 // swift-tools-version:5.3
 
+import Foundation
 @preconcurrency import PackageDescription
 
 let warningFlags = [
@@ -188,7 +189,7 @@ let package = Package(
         .iOS(.v12),
         .tvOS(.v12),
         .watchOS(.v5),
-        .macOS(.v10_14),
+        .macOS(.v10_14)
     ],
     products: [
         .library(
@@ -518,5 +519,16 @@ enum Targets {
 extension String {
     var tests: String {
         return "\(self)Tests"
+    }
+}
+
+/// Customize package for building XCFramework:
+if ProcessInfo.processInfo.environment["DYLIB_BUILD"] != nil {
+    // Enforce dynamic linking for dynamuc framework build
+    package.products = package.products.map { product in
+        guard let library = product as? Product.Library else {
+            return product
+        }
+        return .library(name: library.name, type: .dynamic, targets: library.targets)
     }
 }

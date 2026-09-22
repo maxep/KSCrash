@@ -157,6 +157,9 @@ int kscpu_stackGrowDirection(void) { return -1; }
 
 uintptr_t kscpu_normaliseInstructionPointer(uintptr_t ip) { return ip; }
 
-uintptr_t kscpu_asyncContextRegister(__unused const KSMachineContext *const context) { return 0; }
+// Swift's async calling convention reserves r14 as the async-context register on x86_64,
+// mirroring x22 on arm64 (confirmed in LLVM's X86FrameLowering.cpp and Swift's own
+// FramePointerUnwinder.swift, which uses the same bit-60 frame-pointer tag on both archs).
+uintptr_t kscpu_asyncContextRegister(const KSMachineContext *const context) { return context->machineContext.__ss.__r14; }
 
 #endif

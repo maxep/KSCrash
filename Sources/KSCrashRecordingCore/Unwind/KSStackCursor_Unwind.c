@@ -94,7 +94,7 @@ typedef struct {
     // Frame pointer fallback state
     FrameEntry currentFrame;
 
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
     // Swift Concurrency AsyncContext chain walk state, used once the physical
     // stack is exhausted. 0 = not started yet, or chain exhausted.
     uintptr_t asyncContext;
@@ -458,27 +458,33 @@ static bool tryUpdateStateAfterLR(UnwindCursorContext *ctx, uintptr_t consumedLR
 }
 #endif  // __arm64__ || __arm__
 
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
 /**
- * Marker OR'd directly into the frame-pointer (x29) value of any function using the
- * `swiftasync` calling convention, exported by the Concurrency runtime as
- * `swift_async_extendedFramePointerFlags` (bit 60 on 64-bit Apple arm64). A function with
- * this convention carries the tag in its own live x29 for as long as it's running, so any
- * unwind step that restores a caller's FP from such a frame's record hands back the tagged
- * value verbatim. This is the same mechanism LLDB's Swift-aware unwinder uses to identify
- * async frames - note the tag lives in the FP *value* itself, not in memory it points to,
- * so it must be masked off before the address is dereferenced for anything else.
+ * Marker OR'd directly into the frame-pointer (x29 on arm64, rbp on x86_64) value of any
+ * function using the `swiftasync` calling convention, exported by the Concurrency runtime as
+ * `swift_async_extendedFramePointerFlags` (bit 60 on 64-bit Apple platforms - both
+ * architectures share the same bit and the same `__POINTER_WIDTH__ == 64` definition in
+ * stdlib/public/Concurrency/Task.cpp). A function with this convention carries the tag in
+ * its own live frame-pointer register for as long as it's running, so any unwind step that
+ * restores a caller's FP from such a frame's record hands back the tagged value verbatim.
+ * This is the same mechanism Swift's own crash-time backtracer
+ * (FramePointerUnwinder.swift's `isAsyncFrame`) and LLVM's X86/AArch64 codegen
+ * (X86FrameLowering.cpp's BTS64ri8/AArch64's ORR on the frame pointer) use to identify async
+ * frames - note the tag lives in the FP *value* itself, not in memory it points to, so it
+ * must be masked off before the address is dereferenced for anything else.
  */
 #define KS_SWIFT_ASYNC_EXTENDED_FRAME_FLAG ((uintptr_t)0x1000000000000000ULL)
 
 /**
- * x22 is a callee-saved register: it keeps whatever AsyncContext the most recent async
- * frame on this physical call chain last put there, even after control has returned deep
- * into synchronous code - or, on a reused thread-pool worker thread, even after that async
- * frame has long since finished and the thread has gone on to do something unrelated. So
- * x22 alone cannot tell us whether the thread is actually inside an async call chain right
- * now; only the frame-pointer's extended-frame marker can. Check that the last physical
- * frame reached (ctx->fp) is itself async before trusting x22 as its AsyncContext.
+ * The async-context register (x22 on arm64, r14 on x86_64 - confirmed in LLVM's
+ * X86FrameLowering.cpp/AArch64 codegen) is callee-saved: it keeps whatever AsyncContext the
+ * most recent async frame on this physical call chain last put there, even after control has
+ * returned deep into synchronous code - or, on a reused thread-pool worker thread, even after
+ * that async frame has long since finished and the thread has gone on to do something
+ * unrelated. So the register alone cannot tell us whether the thread is actually inside an
+ * async call chain right now; only the frame-pointer's extended-frame marker can. Check that
+ * the last physical frame reached (ctx->fp) is itself async before trusting the register
+ * value as its AsyncContext.
  */
 static bool currentFrameHasAsyncContext(UnwindCursorContext *ctx)
 {
@@ -516,8 +522,9 @@ static bool tryAdvanceSwiftAsyncChain(UnwindCursorContext *ctx, uintptr_t *outAd
 
     if (!ctx->asyncChainStarted) {
         ctx->asyncChainStarted = true;
-        uintptr_t x22 = currentFrameHasAsyncContext(ctx) ? kscpu_asyncContextRegister(ctx->machineContext) : 0;
-        ctx->asyncContext = x22 == 0 ? 0 : kscpu_normaliseInstructionPointer(x22);
+        uintptr_t asyncContextRegister =
+            currentFrameHasAsyncContext(ctx) ? kscpu_asyncContextRegister(ctx->machineContext) : 0;
+        ctx->asyncContext = asyncContextRegister == 0 ? 0 : kscpu_normaliseInstructionPointer(asyncContextRegister);
     }
 
     while (ctx->asyncContext != 0) {
@@ -548,7 +555,7 @@ static bool tryAdvanceSwiftAsyncChain(UnwindCursorContext *ctx, uintptr_t *outAd
     }
     return false;
 }
-#endif  // __arm64__
+#endif  // __arm64__ || __x86_64__
 
 static bool advanceCursor(KSStackCursor *cursor)
 {
@@ -560,7 +567,7 @@ static bool advanceCursor(KSStackCursor *cursor)
         return false;
     }
 
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
     // A tagged FP isn't a real address - it's the Swift async ABI's marker that the
     // previous frame was a synthetic/async one with no physical caller. Trying to unwind
     // further from it feeds compact-unwind/DWARF/frame-pointer garbage input, which can
@@ -576,7 +583,7 @@ static bool advanceCursor(KSStackCursor *cursor)
     // This prevents spurious frames after thread entry points (thread_start, _pthread_start).
     if (ctx->reachedEndOfStack) {
         KSLOG_TRACE("Stopping unwind - already reached end of stack (FP was 0)");
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
         if (tryAdvanceSwiftAsyncChain(ctx, &nextAddress)) {
             ctx->lastMethod = KSUnwindMethod_SwiftAsync;
             goto successfulExit;
@@ -722,7 +729,7 @@ static bool advanceCursor(KSStackCursor *cursor)
 
     // All methods exhausted - the physical stack is done. Try recovering the logical
     // Swift async caller chain before giving up entirely.
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
     if (tryAdvanceSwiftAsyncChain(ctx, &nextAddress)) {
         ctx->lastMethod = KSUnwindMethod_SwiftAsync;
         goto successfulExit;
@@ -768,7 +775,7 @@ static void resetCursor(KSStackCursor *cursor)
     // Note: methods[] is preserved across reset
     ctx->currentFrame.previous = NULL;
     ctx->currentFrame.return_address = 0;
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
     ctx->asyncContext = 0;
     ctx->asyncChainStarted = false;
 #endif
@@ -796,7 +803,7 @@ void kssc_initWithUnwindMethods(KSStackCursor *cursor, int maxStackDepth, const 
     ctx->lastMethod = KSUnwindMethod_None;
     ctx->currentFrame.previous = NULL;
     ctx->currentFrame.return_address = 0;
-#if defined(__arm64__)
+#if defined(__arm64__) || defined(__x86_64__)
     ctx->asyncContext = 0;
     ctx->asyncChainStarted = false;
 #endif

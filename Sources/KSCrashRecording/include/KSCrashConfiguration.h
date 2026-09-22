@@ -193,9 +193,9 @@ NS_ASSUME_NONNULL_BEGIN
  * `backtrace()` otherwise.
  *
  * For crash-time unwinding of a suspended thread (signal and Mach exception handlers, on
- * arm64/arm64e only), this walks the thread's Swift Concurrency AsyncContext chain once the
- * physical stack is exhausted, recovering async caller frames that a frame-pointer/compact-
- * unwind/DWARF walk alone cannot reach. This is unavailable on other architectures.
+ * arm64/arm64e and x86_64 only), this walks the thread's Swift Concurrency AsyncContext chain
+ * once the physical stack is exhausted, recovering async caller frames that a frame-pointer/
+ * compact-unwind/DWARF walk alone cannot reach. This is unavailable on 32-bit architectures.
  *
  * **Default**: false
  */

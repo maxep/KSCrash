@@ -106,6 +106,23 @@ void kssc_initCursor(KSStackCursor *cursor, void (*resetCursor)(KSStackCursor *)
  */
 void kssc_resetCursor(KSStackCursor *cursor);
 
+/** Enable or disable Swift async continuation stitching for stack captures.
+ *
+ * Shared across cursor implementations: kssc_initSelfThread() uses this to decide
+ * whether to call `backtrace_async()`, and the crash-time unwind cursor
+ * (kssc_initWithUnwind()) uses it to decide whether to walk the Swift AsyncContext
+ * chain once the physical stack is exhausted.
+ *
+ * Default: false.
+ */
+void kssc_setSwiftAsyncStackTracesEnabled(bool enabled);
+
+/** Get whether Swift async continuation stitching is enabled.
+ *
+ * @return The value last set via kssc_setSwiftAsyncStackTracesEnabled(), or false.
+ */
+bool kssc_swiftAsyncStackTracesEnabled(void);
+
 #ifdef __cplusplus
 }
 #endif

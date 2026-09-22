@@ -49,7 +49,11 @@ typedef enum {
     KSUnwindMethod_Dwarf,
 
     /** Unwound using frame pointer walking (fallback). */
-    KSUnwindMethod_FramePointer
+    KSUnwindMethod_FramePointer,
+
+    /** Recovered by walking the Swift Concurrency AsyncContext chain after the
+     * physical stack was exhausted (arm64/arm64e only). */
+    KSUnwindMethod_SwiftAsync
 } KSUnwindMethod;
 
 /**

@@ -25,7 +25,6 @@
 #include "KSStackCursor_SelfThread.h"
 
 #include <execinfo.h>
-#include <stdatomic.h>
 
 #include "KSCompilerDefines.h"
 #include "KSStackCursor_Backtrace.h"
@@ -41,19 +40,12 @@ typedef struct {
     uintptr_t backtrace[0];
 } SelfThreadContext;
 
-static atomic_bool g_swiftAsyncStackTracesEnabled = false;
-
-void kssc_setSwiftAsyncStackTracesEnabled(bool enabled)
-{
-    atomic_store_explicit(&g_swiftAsyncStackTracesEnabled, enabled, memory_order_relaxed);
-}
-
 void kssc_initSelfThread(KSStackCursor *cursor, int skipEntries) KS_KEEP_FUNCTION_IN_STACKTRACE
 {
     SelfThreadContext *context = (SelfThreadContext *)cursor->context;
     int backtraceLength;
 #if KSCRASH_HAS_BACKTRACE_ASYNC
-    if (atomic_load_explicit(&g_swiftAsyncStackTracesEnabled, memory_order_relaxed)) {
+    if (kssc_swiftAsyncStackTracesEnabled()) {
         if (__builtin_available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, *)) {
             backtraceLength = (int)backtrace_async((void **)context->backtrace, MAX_BACKTRACE_LENGTH, NULL);
         } else {

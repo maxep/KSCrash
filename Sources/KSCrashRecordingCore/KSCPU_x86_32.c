@@ -148,4 +148,6 @@ int kscpu_stackGrowDirection(void) { return -1; }
 
 uintptr_t kscpu_normaliseInstructionPointer(uintptr_t ip) { return ip; }
 
+uintptr_t kscpu_asyncContextRegister(__unused const KSMachineContext *const context) { return 0; }
+
 #endif

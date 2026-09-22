@@ -24,12 +24,25 @@
 
 #include "KSStackCursor.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 
 #include "KSSymbolicator.h"
 
 // #define KSLogger_LocalLevel TRACE
 #include "KSLogger.h"
+
+static atomic_bool g_swiftAsyncStackTracesEnabled = false;
+
+void kssc_setSwiftAsyncStackTracesEnabled(bool enabled)
+{
+    atomic_store_explicit(&g_swiftAsyncStackTracesEnabled, enabled, memory_order_relaxed);
+}
+
+bool kssc_swiftAsyncStackTracesEnabled(void)
+{
+    return atomic_load_explicit(&g_swiftAsyncStackTracesEnabled, memory_order_relaxed);
+}
 
 static bool g_advanceCursor(__unused KSStackCursor *cursor)
 {

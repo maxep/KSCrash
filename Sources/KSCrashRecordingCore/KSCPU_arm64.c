@@ -167,4 +167,11 @@ uintptr_t kscpu_normaliseInstructionPointer(uintptr_t ip)
 #endif
 }
 
+uintptr_t kscpu_asyncContextRegister(const KSMachineContext *const context)
+{
+    // Swift's swiftasync calling convention reserves x22 for the current AsyncContext
+    // pointer. Still PAC-signed on arm64e - callers must normalise before dereferencing.
+    return (uintptr_t)kscpu_registerValue(context, 22);
+}
+
 #endif

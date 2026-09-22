@@ -185,12 +185,17 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @property(nonatomic, assign) BOOL enableSwapCxaThrow;
 
-/** If true, use `backtrace_async()` for KSCrash's current-thread stack capture paths.
+/** If true, stitch Swift async continuation frames into KSCrash's stack captures.
  *
- * This can stitch Swift async continuation frames into self-thread backtraces such as
- * C++ exception throw-site and handler cursors, user-reported fallbacks, and current-thread
- * `captureBacktrace` calls. When `backtrace_async()` is not available at build time or runtime,
- * KSCrash falls back to `backtrace()`.
+ * For current-thread stack capture paths (C++ exception throw-site and handler cursors,
+ * user-reported fallbacks, and current-thread `captureBacktrace` calls), this uses
+ * `backtrace_async()` when available at both build time and runtime, falling back to
+ * `backtrace()` otherwise.
+ *
+ * For crash-time unwinding of a suspended thread (signal and Mach exception handlers, on
+ * arm64/arm64e only), this walks the thread's Swift Concurrency AsyncContext chain once the
+ * physical stack is exhausted, recovering async caller frames that a frame-pointer/compact-
+ * unwind/DWARF walk alone cannot reach. This is unavailable on other architectures.
  *
  * **Default**: false
  */

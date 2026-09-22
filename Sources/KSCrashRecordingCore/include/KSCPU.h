@@ -160,6 +160,16 @@ void kscpu_getState(struct KSMachineContext *destinationContext);
  */
 uintptr_t kscpu_normaliseInstructionPointer(uintptr_t ip);
 
+/** Get the current Swift Concurrency async-context register value (arm64: x22).
+ *
+ * @param context The machine context.
+ *
+ * @return The async-context register's value, still PAC-signed on arm64e (see
+ *         kscpu_normaliseInstructionPointer()). Returns 0 on architectures with no
+ *         async-context register — do not treat 0 as "not in an async frame" there.
+ */
+uintptr_t kscpu_asyncContextRegister(const struct KSMachineContext *const context);
+
 #ifdef __cplusplus
 }
 #endif

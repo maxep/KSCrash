@@ -379,6 +379,53 @@ static bool tryUnwindWithMethod(UnwindCursorContext *ctx, KSUnwindMethod method,
 
 #if defined(__arm64__) || defined(__arm__)
 /**
+ * Look up the start of the function containing an address, using its compact unwind entry.
+ *
+ * The linker merges adjacent entries that share an encoding, so the start can belong to an
+ * earlier function laid out right before this one.
+ */
+static bool functionStartForAddress(const UnwindCursorContext *ctx, uintptr_t address, uintptr_t *outStart)
+{
+    KSBinaryImageUnwindInfo imageInfo;
+    (void)ctx;
+    if (!ksbic_getUnwindInfoForAddress(address, &imageInfo) || !imageInfo.hasCompactUnwind) {
+        return false;
+    }
+
+    KSCompactUnwindEntry entry;
+    if (!kscu_findEntry(imageInfo.unwindInfo, imageInfo.unwindInfoSize, address, (uintptr_t)imageInfo.header,
+                        imageInfo.slide, &entry)) {
+        return false;
+    }
+    *outStart = entry.functionStart;
+    return true;
+}
+
+/**
+ * Check whether LR points back into the function at PC.
+ *
+ * LR holds a function's return address only until that function makes a call: the call
+ * overwrites LR with an address inside the calling function. An LR inside the function at PC is
+ * therefore the return address of a call that function already made, and its own return address
+ * is in its frame instead. This is the case for a function that traps after calling something,
+ * such as _assertionFailure after it prints its message.
+ *
+ * A recursive function stopped in its prologue also has LR inside itself. Treating that LR as
+ * stale drops one of the recursive frames.
+ */
+static bool isLinkRegisterStale(const UnwindCursorContext *ctx)
+{
+    uintptr_t pc = kscpu_normaliseInstructionPointer(ctx->pc);
+    uintptr_t lr = kscpu_normaliseInstructionPointer(ctx->lr);
+    uintptr_t pcFunctionStart = 0;
+    uintptr_t lrFunctionStart = 0;
+
+    // LR is a return address, so look up the call instruction before it.
+    return functionStartForAddress(ctx, pc, &pcFunctionStart) &&
+           functionStartForAddress(ctx, lr - 1, &lrFunctionStart) && pcFunctionStart == lrFunctionStart;
+}
+
+/**
  * Try to update register state after using LR, using methods in order.
  *
  * Note: We use the exact PC (not PC-1) here because ctx->pc is still the
@@ -484,9 +531,22 @@ static bool advanceCursor(KSStackCursor *cursor)
         goto successfulExit;
     }
 
+    // Whether ctx->pc is the instruction pointer of the first frame rather than a return address.
+    bool unwindFromInstructionPointer = false;
+
     // For ARM architectures, the link register contains the return address for the first call
     // Use it before trying to unwind
 #if defined(__arm64__) || defined(__arm__)
+    if (!ctx->usedLinkRegister && ctx->lr != 0 && isLinkRegisterStale(ctx)) {
+        // LR is the return address of a call the first frame already made. Skip it and unwind the
+        // first frame from its instruction pointer, which reports its real return address.
+        KSLOG_TRACE("LR 0x%lx points back into the function at PC 0x%lx - ignoring it", (unsigned long)ctx->lr,
+                    (unsigned long)ctx->pc);
+        ctx->usedLinkRegister = true;
+        ctx->lr = 0;
+        unwindFromInstructionPointer = true;
+    }
+
     if (!ctx->usedLinkRegister && ctx->lr != 0) {
         ctx->usedLinkRegister = true;
         nextAddress = ctx->lr;
@@ -565,9 +625,9 @@ static bool advanceCursor(KSStackCursor *cursor)
 #endif
 
     // Try each method in order until one succeeds.
-    // ctx->pc is a return address at this point, so use PC-1 for unwind info lookup.
+    // ctx->pc is usually a return address at this point, so use PC-1 for unwind info lookup.
     for (int i = 0; i < KSUNWIND_MAX_METHODS && ctx->methods[i] != KSUnwindMethod_None; i++) {
-        if (tryUnwindWithMethod(ctx, ctx->methods[i], &nextAddress, true /* isReturnAddress */)) {
+        if (tryUnwindWithMethod(ctx, ctx->methods[i], &nextAddress, !unwindFromInstructionPointer)) {
             // Check if we've reached end of frame chain.
             // At thread entry points (thread_start, _pthread_start), FP is typically 0.
             // If FP is 0 after unwinding, we've reached the bottom of the stack.

@@ -11,9 +11,11 @@
 #import <mach-o/loader.h>
 #import <mach/mach.h>
 #import <pthread.h>
+#import <stdatomic.h>
 
 #import "KSBacktrace.h"
 #import "KSBinaryImageCache.h"
+#import "KSCPU.h"
 #import "KSDynamicLinker.h"
 #import "KSMach-O.h"
 #import "KSMachineContext.h"
@@ -2100,6 +2102,84 @@ static bool expressionEndsWithin(const uint8_t *expr, size_t len, const uint8_t 
                       @"Found %d repeats, which suggests the unwinder is stuck.",
                       maxConsecutiveRepeats);
 }
+
+#if defined(__arm64__) && !TARGET_OS_WATCH
+
+typedef struct {
+    atomic_bool spinning;
+    atomic_bool exit;
+    thread_t machThread;
+    uintptr_t targetReturnAddress;
+} KSStaleLRThreadContext;
+
+__attribute__((noinline)) static void ksunwind_staleLR_callee(void) { __asm__ volatile(""); }
+
+// Frame-based function that calls another function and then stops without making a further call.
+// LR still holds the return address of that call, which points back into this function, while
+// this function's own return address is in its frame record. This is the state a function such
+// as _assertionFailure is in when it traps after printing its message.
+__attribute__((noinline)) static void ksunwind_staleLR_target(KSStaleLRThreadContext *ctx)
+{
+    ctx->targetReturnAddress = (uintptr_t)__builtin_return_address(0);
+    ksunwind_staleLR_callee();
+    atomic_store_explicit(&ctx->spinning, true, memory_order_release);
+    while (!atomic_load_explicit(&ctx->exit, memory_order_acquire)) {
+    }
+}
+
+__attribute__((noinline)) static void ksunwind_staleLR_caller(KSStaleLRThreadContext *ctx)
+{
+    ksunwind_staleLR_target(ctx);
+    __asm__ volatile("");  // Keep the call above from becoming a tail call.
+}
+
+static void *ksunwind_staleLR_threadMain(void *arg)
+{
+    KSStaleLRThreadContext *ctx = (KSStaleLRThreadContext *)arg;
+    ctx->machThread = pthread_mach_thread_np(pthread_self());
+    ksunwind_staleLR_caller(ctx);
+    return NULL;
+}
+
+/// Regression test: when the crashing function has already made a call, LR no longer holds its
+/// return address. The frame after the crashing one must be its real caller, not the stale LR.
+- (void)testUnwind_StaleLinkRegisterReportsRealCaller
+{
+    ksdl_init();
+
+    KSStaleLRThreadContext ctx = { 0 };
+    atomic_init(&ctx.spinning, false);
+    atomic_init(&ctx.exit, false);
+
+    pthread_t thread;
+    XCTAssertEqual(pthread_create(&thread, NULL, ksunwind_staleLR_threadMain, &ctx), 0);
+    while (!atomic_load_explicit(&ctx.spinning, memory_order_acquire)) {
+        usleep(1000);
+    }
+    XCTAssertEqual(thread_suspend(ctx.machThread), KERN_SUCCESS);
+
+    KSMachineContext machineContext;
+    ksmc_getContextForThread(ctx.machThread, &machineContext, false);
+
+    KSStackCursor cursor;
+    kssc_initWithUnwind(&cursor, 128, &machineContext);
+
+    uintptr_t addresses[8] = { 0 };
+    int frameCount = 0;
+    while (frameCount < 8 && cursor.advanceCursor(&cursor)) {
+        addresses[frameCount++] = cursor.stackEntry.address;
+    }
+
+    XCTAssertEqual(thread_resume(ctx.machThread), KERN_SUCCESS);
+    atomic_store_explicit(&ctx.exit, true, memory_order_release);
+    pthread_join(thread, NULL);
+
+    XCTAssertGreaterThan(frameCount, 2);
+    XCTAssertEqual(addresses[1], kscpu_normaliseInstructionPointer(ctx.targetReturnAddress),
+                   @"Frame 1 should be the return address into ksunwind_staleLR_caller");
+}
+
+#endif  // __arm64__ && !TARGET_OS_WATCH
 
 #pragma mark - Image Set
 
